@@ -973,6 +973,11 @@ func (this *Generator) genDispReturnCode(varType *typelib.VarType, goType string
 		}
 	}
 
+	// Проверка для структур без PVarCastExpr
+	if varType.Struct && varType.PVarCastExpr == "" {
+		return "return *(*" + goType + ")(unsafe.Pointer(retVal.ToPointer()))"
+	}
+
 	castExpr := strings.Replace(varType.PVarCastExpr, "$", "retVal", 1)
 	switch oleType {
 	case "ole.Date":

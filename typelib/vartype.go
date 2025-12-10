@@ -264,6 +264,7 @@ func _newVarType(pTypeInfo *win32.ITypeInfo, pTypeDesc *win32.TYPEDESC,
 				g := syscall.GUID{}
 				t.Size = int(unsafe.Sizeof(g))
 				t.Align = int(unsafe.Alignof(g))
+				t.PVarCastExpr = "$.ToGUID()"
 				break
 			}
 			t.Struct = true
@@ -304,6 +305,7 @@ func _newVarType(pTypeInfo *win32.ITypeInfo, pTypeDesc *win32.TYPEDESC,
 				g := syscall.GUID{}
 				t.Size = int(unsafe.Sizeof(g))
 				t.Align = int(unsafe.Alignof(g))
+				t.PVarCastExpr = "$.ToGUID()"
 				break
 			}
 			name0 := t.Name
