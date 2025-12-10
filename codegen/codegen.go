@@ -988,6 +988,9 @@ func (this *Generator) genDispReturnCode(varType *typelib.VarType, goType string
 		return "return com.NewError(" + castExpr + ")"
 	case "win32.VARIANT_BOOL":
 		return "return " + castExpr + " != win32.VARIANT_FALSE"
+	case "syscall.GUID":
+		// ToGUID() returns (syscall.GUID, error), need to handle error
+		return "guid, _ := " + castExpr + "; return guid"
 	}
 	return "return " + castExpr
 }
