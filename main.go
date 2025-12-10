@@ -1,13 +1,14 @@
-package main
+﻿package main
 
 import (
 	"flag"
 	"fmt"
-	"github.com/zzl/go-tlbimp/codegen"
-	"github.com/zzl/go-tlbimp/typelib"
-	"github.com/zzl/go-tlbimp/utils"
 	"os"
 	"strings"
+
+	"github.com/gerasimovpavel/go-tlbimp/codegen"
+	"github.com/gerasimovpavel/go-tlbimp/typelib"
+	"github.com/gerasimovpavel/go-tlbimp/utils"
 )
 
 var tlbPath string

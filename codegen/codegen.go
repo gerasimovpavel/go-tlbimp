@@ -1,15 +1,16 @@
-package codegen
+﻿package codegen
 
 import (
 	"fmt"
-	"github.com/zzl/go-tlbimp/typelib"
-	"github.com/zzl/go-tlbimp/utils"
-	"github.com/zzl/go-win32api/v2/win32"
 	"io/ioutil"
 	"os"
 	"path"
 	"strconv"
 	"strings"
+
+	"github.com/gerasimovpavel/go-tlbimp/typelib"
+	"github.com/gerasimovpavel/go-tlbimp/utils"
+	"github.com/zzl/go-win32api/v2/win32"
 )
 
 type Generator struct {
@@ -160,10 +161,10 @@ func genImports(code string) string {
 		imports += "\t\"github.com/zzl/go-win32api/v2/win32\"\n"
 	}
 	if strings.Contains(code, "com.") {
-		imports += "\t\"github.com/zzl/go-com/com\"\n"
+		imports += "\t\"github.com/gerasimovpavel/go-com/com\"\n"
 	}
 	if strings.Contains(code, "ole.") {
-		imports += "\t\"github.com/zzl/go-com/ole\"\n"
+		imports += "\t\"github.com/gerasimovpavel/go-com/ole\"\n"
 	}
 	if strings.Contains(code, "syscall") {
 		imports += "\t\"syscall\"\n"

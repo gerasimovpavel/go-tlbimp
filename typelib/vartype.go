@@ -1,13 +1,14 @@
-package typelib
+﻿package typelib
 
 import (
-	"github.com/zzl/go-com/com"
-	"github.com/zzl/go-tlbimp/utils"
-	"github.com/zzl/go-win32api/v2/win32"
 	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"github.com/gerasimovpavel/go-com/com"
+	"github.com/gerasimovpavel/go-tlbimp/utils"
+	"github.com/zzl/go-win32api/v2/win32"
 )
 
 type VarType struct {
