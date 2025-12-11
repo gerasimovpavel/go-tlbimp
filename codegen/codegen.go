@@ -622,10 +622,16 @@ func (this *Generator) genDispFuncInvoke(f *typelib.FuncInfo, fName string) stri
 			code += "\t\t" + aName + " := " +
 				"(" + goParamType + ")(" + vArg + ".ToPointer())\n"
 		} else if goParamType == "ole.Variant" {
-			code += "\t\t" + aName + ", _ := " + vArg + "\n"
+			code += "\t\t" + aName + ", err := " + vArg + "\n"
+			code += "\t\tif err != nil {\n"
+			code += "\t\t\treturn win32.DISP_E_TYPEMISMATCH\n"
+			code += "\t\t}\n"
 		} else {
-			code += "\t\t" + aName + ", _ := " +
+			code += "\t\t" + aName + ", err := " +
 				"" + vArg + ".To" + utils.CapName(goParamType) + "()\n"
+			code += "\t\tif err != nil {\n"
+			code += "\t\t\treturn win32.DISP_E_TYPEMISMATCH\n"
+			code += "\t\t}\n"
 		}
 	}
 	if goReturnType != "" {
@@ -835,16 +841,21 @@ func (this *Generator) genDispMethod(f *typelib.FuncInfo, className string,
 		code += "optArgs ...interface{}"
 	}
 
-	code += ") " + goReturnType + " {\n"
+	// Добавляем error к возвращаемому типу
+	if goReturnType != "" {
+		code += ") (" + goReturnType + ", error) {\n"
+	} else {
+		code += ") error {\n"
+	}
 
 	if optParamCount > 0 {
 		code += "\toptArgs = ole.ProcessOptArgs(" + optArgsVarName + ", optArgs)\n"
 	}
 
 	if propSet {
-		code += "\t_ = this." + methodType + "(" + sDispId
+		code += "\terr := this." + methodType + "(" + sDispId
 	} else {
-		code += "\tretVal, _ := this." + methodType + "(" + sDispId
+		code += "\tretVal, err := this." + methodType + "(" + sDispId
 	}
 
 	if reqParamNames != nil {
@@ -857,13 +868,23 @@ func (this *Generator) genDispMethod(f *typelib.FuncInfo, className string,
 	}
 	code += ")\n"
 
-	//
-	if goReturnType == "ole.Variant" {
-		code += "\tcom.AddToScope(retVal)\n"
-	}
+	// Обработка ошибок
+	if propSet {
+		code += "\tif err != nil {\n"
+		code += "\t\treturn err\n"
+		code += "\t}\n"
+		code += "\treturn nil\n"
+	} else {
+		code += "\tif err != nil {\n"
+		code += "\t\treturn " + this.genErrorReturnValue(goReturnType) + ", err\n"
+		code += "\t}\n"
 
-	//
-	if !propSet {
+		//
+		if goReturnType == "ole.Variant" {
+			code += "\tcom.AddToScope(retVal)\n"
+		}
+
+		//
 		code += "\t" + this.genDispReturnCode(f.ReturnType, goReturnType) + "\n"
 	}
 	code += "}\n\n"
@@ -957,42 +978,57 @@ func (this *Generator) mapOleTypeToGoType(varType *typelib.VarType, forReturn bo
 func (this *Generator) genDispReturnCode(varType *typelib.VarType, goType string) string {
 	oleType := varType.Name
 	if oleType == "" {
-		return "_= retVal"
+		return "return nil"
 	}
 	if goType[0] == '*' {
 		if varType.RefType != nil && varType.RefType.Interface {
 			if goType == "*com.UnknownClass" {
-				return "return com.NewUnknownClass(retVal.PunkValVal(), true)"
+				return "return com.NewUnknownClass(retVal.PunkValVal(), true), nil"
 			} else if goType == "*ole.DispatchClass" {
-				return "return ole.NewDispatchClass(retVal.IDispatch(), true)"
+				return "return ole.NewDispatchClass(retVal.IDispatch(), true), nil"
 			} else if varType.RefType.DispInterface {
-				return "return New" + goType[1:] + "(retVal.IDispatch(), false, true)"
+				return "return New" + goType[1:] + "(retVal.IDispatch(), false, true), nil"
 			} else {
-				return "return New" + goType[1:] + "(retVal.PunkValVal(), false, true)"
+				return "return New" + goType[1:] + "(retVal.PunkValVal(), false, true), nil"
 			}
 		}
 	}
 
 	// Проверка для структур без PVarCastExpr
 	if varType.Struct && varType.PVarCastExpr == "" {
-		return "return *(*" + goType + ")(unsafe.Pointer(retVal.ToPointer()))"
+		return "return *(*" + goType + ")(unsafe.Pointer(retVal.ToPointer())), nil"
 	}
 
 	castExpr := strings.Replace(varType.PVarCastExpr, "$", "retVal", 1)
 	switch oleType {
 	case "ole.Date":
-		return "return " + castExpr + ".ToGoTime()"
+		return "return " + castExpr + ".ToGoTime(), nil"
 	case "win32.BSTR":
-		return "return win32.BstrToStrAndFree(" + castExpr + ")"
+		return "return win32.BstrToStrAndFree(" + castExpr + "), nil"
 	case "win32.HRESULT":
-		return "return com.NewError(" + castExpr + ")"
+		return "return com.NewError(" + castExpr + "), nil"
 	case "win32.VARIANT_BOOL":
-		return "return " + castExpr + " != win32.VARIANT_FALSE"
+		return "return " + castExpr + " != win32.VARIANT_FALSE, nil"
 	case "syscall.GUID":
 		// ToGUID() returns (syscall.GUID, error), need to handle error
-		return "guid, _ := " + castExpr + "; return guid"
+		return "guid, err := " + castExpr + "\n\tif err != nil {\n\t\treturn syscall.GUID{}, err\n\t}\n\treturn guid, nil"
 	}
-	return "return " + castExpr
+	// Проверяем, не является ли это методом, возвращающим error
+	// Методы типа ToXxx() обычно возвращают (Type, error)
+	if strings.Contains(castExpr, ".To") && !strings.Contains(castExpr, ".ToPointer()") && 
+	   !strings.Contains(castExpr, ".ToGoTime()") {
+		// Пытаемся обработать как метод с error
+		// Разделяем на метод и результат
+		parts := strings.Split(castExpr, ".")
+		if len(parts) > 1 {
+			methodName := parts[len(parts)-1]
+			if strings.HasPrefix(methodName, "To") && !strings.Contains(methodName, "(") {
+				// Это метод вида retVal.ToXXX(), который может возвращать error
+				return "result, err := " + castExpr + "\n\tif err != nil {\n\t\treturn " + this.genErrorReturnValue(goType) + ", err\n\t}\n\treturn result, nil"
+			}
+		}
+	}
+	return "return " + castExpr + ", nil"
 }
 
 func (this *Generator) genCoClass(ti *typelib.TypeInfo) {
@@ -1530,7 +1566,12 @@ func (this *Generator) genFunc(className string, fName string, fIndex int,
 		code += goParamType
 	}
 
-	code += ") " + goReturnType
+	// Добавляем error к возвращаемому типу
+	if goReturnType != "" {
+		code += ") (" + goReturnType + ", error)"
+	} else {
+		code += ") error"
+	}
 
 	if noBody {
 		//code += "\n"
@@ -1542,9 +1583,9 @@ func (this *Generator) genFunc(className string, fName string, fIndex int,
 	code += "\taddr := (*this.LpVtbl)[" + strconv.Itoa(fIndex) + "]\n"
 	code += "\t"
 	if goReturnType != "" {
-		code += "ret, _, _ :="
+		code += "ret, _, hr :="
 	} else {
-		code += "_, _, _ ="
+		code += "_, _, hr ="
 	}
 	code += " syscall.SyscallN(addr, uintptr(unsafe.Pointer(this))"
 	var outInterfaceParams []string
@@ -1581,11 +1622,25 @@ func (this *Generator) genFunc(className string, fName string, fIndex int,
 		}
 	}
 	code += ")\n"
+	
+	// Проверка HRESULT
+	if goReturnType != "" {
+		code += "\tif win32.FAILED(win32.HRESULT(hr)) {\n"
+		code += "\t\treturn " + this.genErrorReturnValue(goReturnType) + ", com.NewError(win32.HRESULT(hr))\n"
+		code += "\t}\n"
+	} else {
+		code += "\tif win32.FAILED(win32.HRESULT(hr)) {\n"
+		code += "\t\treturn com.NewError(win32.HRESULT(hr))\n"
+		code += "\t}\n"
+	}
+	
 	for _, outParam := range outInterfaceParams {
 		code += "\t\tcom.AddToScope(" + outParam + ")\n"
 	}
 	if goReturnType != "" {
 		code += "\t" + this.genReturnCode(returnType, goReturnType) + "\n"
+	} else {
+		code += "\treturn nil\n"
 	}
 	code += "}\n\n"
 
@@ -1609,13 +1664,64 @@ func (this *Generator) genReturnCode(typ *typelib.VarType, goType string) string
 		castExpr = "unsafe.Pointer(ret)"
 	}
 	if castExpr != "" {
-		return "return " + castExpr
+		return "return " + castExpr + ", nil"
 	}
 	if typ.Struct {
-		return "return *(*" + goType + ")(unsafe.Pointer(ret))"
+		return "return *(*" + goType + ")(unsafe.Pointer(ret)), nil"
 	}
 	if goType[0] == '*' {
-		return "return (" + goType + ")(unsafe.Pointer(ret))"
+		return "return (" + goType + ")(unsafe.Pointer(ret)), nil"
 	}
-	return "return " + goType + "(ret)"
+	return "return " + goType + "(ret), nil"
+}
+
+func (this *Generator) genErrorReturnValue(goReturnType string) string {
+	if goReturnType == "" {
+		return ""
+	}
+	switch goReturnType {
+	case "bool":
+		return "false"
+	case "string":
+		return "\"\""
+	case "int8":
+		return "0"
+	case "int16":
+		return "0"
+	case "int32":
+		return "0"
+	case "int64":
+		return "0"
+	case "int":
+		return "0"
+	case "uint8":
+		return "0"
+	case "uint16":
+		return "0"
+	case "uint32":
+		return "0"
+	case "uint64":
+		return "0"
+	case "uint":
+		return "0"
+	case "float32":
+		return "0"
+	case "float64":
+		return "0"
+	case "uintptr":
+		return "0"
+	case "time.Time":
+		return "time.Time{}"
+	case "syscall.GUID":
+		return "syscall.GUID{}"
+	case "com.Error":
+		return "com.OK"
+	default:
+		// Для указателей и других типов возвращаем nil
+		if len(goReturnType) > 0 && goReturnType[0] == '*' {
+			return "nil"
+		}
+		// Для структур возвращаем пустую структуру
+		return goReturnType + "{}"
+	}
 }
