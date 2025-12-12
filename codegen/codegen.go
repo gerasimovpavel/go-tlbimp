@@ -366,7 +366,7 @@ func (this *Generator) genDispInterface(ti *typelib.TypeInfo) {
 	code += "\t\treturn nil;\n"
 	code += "\t}\n"
 
-	code += "\tp := &" + className + "{ole.OleClient{pDisp}}\n"
+	code += "\tp := &" + className + "{ole.OleClient{IDispatch: pDisp}}\n"
 	code += "\tif addRef {\n"
 	code += "\t\tpDisp.AddRef()\n"
 	code += "\t}\n"
@@ -841,11 +841,20 @@ func (this *Generator) genDispMethod(f *typelib.FuncInfo, className string,
 		code += "optArgs ...interface{}"
 	}
 
-	// Добавляем error к возвращаемому типу
-	if goReturnType != "" {
-		code += ") (" + goReturnType + ", error) {\n"
+	// Добавляем error к возвращаемому типу (кроме PropGet)
+	if methodType == "PropGet" {
+		// Для PropGet не возвращаем error
+		if goReturnType != "" {
+			code += ") " + goReturnType + " {\n"
+		} else {
+			code += ") {\n"
+		}
 	} else {
-		code += ") error {\n"
+		if goReturnType != "" {
+			code += ") (" + goReturnType + ", error) {\n"
+		} else {
+			code += ") error {\n"
+		}
 	}
 
 	if optParamCount > 0 {
@@ -854,8 +863,16 @@ func (this *Generator) genDispMethod(f *typelib.FuncInfo, className string,
 
 	if propSet {
 		code += "\terr := this." + methodType + "(" + sDispId
+	} else if goReturnType == "" {
+		// Для void методов не создаем переменную retVal
+		code += "\t_, err := this." + methodType + "(" + sDispId
 	} else {
-		code += "\tretVal, err := this." + methodType + "(" + sDispId
+		if methodType == "PropGet" {
+			// Для PropGet не обрабатываем ошибку
+			code += "\tretVal, _ := this." + methodType + "(" + sDispId
+		} else {
+			code += "\tretVal, err := this." + methodType + "(" + sDispId
+		}
 	}
 
 	if reqParamNames != nil {
@@ -869,14 +886,28 @@ func (this *Generator) genDispMethod(f *typelib.FuncInfo, className string,
 	code += ")\n"
 
 	// Обработка ошибок
-	if propSet {
+	if methodType == "PropGet" {
+		// Для PropGet не обрабатываем ошибку, просто возвращаем значение
+		if goReturnType == "ole.Variant" {
+			code += "\tcom.AddToScope(retVal)\n"
+		}
+		if goReturnType != "" {
+			// Для PropGet генерируем возврат без error
+			code += this.genDispReturnCodeForPropGet(f.ReturnType, goReturnType)
+		}
+	} else if propSet {
 		code += "\tif err != nil {\n"
 		code += "\t\treturn err\n"
 		code += "\t}\n"
 		code += "\treturn nil\n"
 	} else {
 		code += "\tif err != nil {\n"
-		code += "\t\treturn " + this.genErrorReturnValue(goReturnType) + ", err\n"
+		if goReturnType == "" {
+			// Для void методов возвращаем только error
+			code += "\t\treturn err\n"
+		} else {
+			code += "\t\treturn " + this.genErrorReturnValue(goReturnType) + ", err\n"
+		}
 		code += "\t}\n"
 
 		//
@@ -885,7 +916,12 @@ func (this *Generator) genDispMethod(f *typelib.FuncInfo, className string,
 		}
 
 		//
-		code += "\t" + this.genDispReturnCode(f.ReturnType, goReturnType) + "\n"
+		if goReturnType == "" {
+			// Для void методов возвращаем только nil
+			code += "\treturn nil\n"
+		} else {
+			code += "\t" + this.genDispReturnCode(f.ReturnType, goReturnType) + "\n"
+		}
 	}
 	code += "}\n\n"
 	return code
@@ -1031,6 +1067,63 @@ func (this *Generator) genDispReturnCode(varType *typelib.VarType, goType string
 	return "return " + castExpr + ", nil"
 }
 
+func (this *Generator) genDispReturnCodeForPropGet(varType *typelib.VarType, goType string) string {
+	oleType := varType.Name
+	if oleType == "" {
+		return "\treturn nil\n"
+	}
+	if goType[0] == '*' {
+		if varType.RefType != nil && varType.RefType.Interface {
+			if goType == "*com.UnknownClass" {
+				return "\treturn com.NewUnknownClass(retVal.PunkValVal(), true)\n"
+			} else if goType == "*ole.DispatchClass" {
+				return "\treturn ole.NewDispatchClass(retVal.IDispatch(), true)\n"
+			} else if varType.RefType.DispInterface {
+				return "\treturn New" + goType[1:] + "(retVal.IDispatch(), false, true)\n"
+			} else {
+				return "\treturn New" + goType[1:] + "(retVal.PunkValVal(), false, true)\n"
+			}
+		}
+	}
+
+	// Проверка для структур без PVarCastExpr
+	if varType.Struct && varType.PVarCastExpr == "" {
+		return "\treturn *(*" + goType + ")(unsafe.Pointer(retVal.ToPointer()))\n"
+	}
+
+	castExpr := strings.Replace(varType.PVarCastExpr, "$", "retVal", 1)
+	switch oleType {
+	case "ole.Date":
+		return "\treturn " + castExpr + ".ToGoTime()\n"
+	case "win32.BSTR":
+		return "\treturn win32.BstrToStrAndFree(" + castExpr + ")\n"
+	case "win32.HRESULT":
+		return "\treturn com.NewError(" + castExpr + ")\n"
+	case "win32.VARIANT_BOOL":
+		return "\treturn " + castExpr + " != win32.VARIANT_FALSE\n"
+	case "syscall.GUID":
+		// Для PropGet игнорируем ошибку, возвращаем нулевой GUID при ошибке
+		return "\tguid, _ := " + castExpr + "\n\treturn guid\n"
+	}
+	// Проверяем, не является ли это методом, возвращающим error
+	// Методы типа ToXxx() обычно возвращают (Type, error)
+	if strings.Contains(castExpr, ".To") && !strings.Contains(castExpr, ".ToPointer()") && 
+	   !strings.Contains(castExpr, ".ToGoTime()") {
+		// Пытаемся обработать как метод с error
+		// Разделяем на метод и результат
+		parts := strings.Split(castExpr, ".")
+		if len(parts) > 1 {
+			methodName := parts[len(parts)-1]
+			if strings.HasPrefix(methodName, "To") && !strings.Contains(methodName, "(") {
+				// Это метод вида retVal.ToXXX(), который может возвращать error
+				// Для PropGet игнорируем ошибку, возвращаем нулевое значение при ошибке
+				return "\tresult, _ := " + castExpr + "\n\treturn result\n"
+			}
+		}
+	}
+	return "\treturn " + castExpr + "\n"
+}
+
 func (this *Generator) genCoClass(ti *typelib.TypeInfo) {
 	className := utils.CapName(ti.Name)
 	code := this.codeMap[className]
@@ -1062,7 +1155,7 @@ func (this *Generator) genCoClass(ti *typelib.TypeInfo) {
 		code += "\t\treturn nil;\n"
 		code += "\t}\n"
 
-		code += "\tp := &" + className + "{" + implClass + "{ole.OleClient{pDisp}}}\n"
+		code += "\tp := &" + className + "{" + implClass + "{ole.OleClient{IDispatch: pDisp}}}\n"
 
 		code += "\tif addRef {\n"
 		code += "\t\tpDisp.AddRef()\n"
